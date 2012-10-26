@@ -1921,6 +1921,29 @@ ZEND_API char *zend_str_tolower_dup(const char *source, unsigned int length) /* 
 }
 /* }}} */
 
+ZEND_API char *zend_str_tolower_copy_changed(char *dest, const char *source, unsigned int length, zend_bool *changed) /* {{{ */
+{
+	register unsigned char *str = (unsigned char*)source;
+	register unsigned char *result = (unsigned char*)dest;
+	register unsigned char *end = str + length;
+	*changed = 0;
+
+	while (str < end) {
+		*result = zend_tolower((int)*str);
+		*changed |= (*result++ != *str++);
+	}
+	*result = '\0';
+
+	return dest;
+}
+/* }}} */
+
+ZEND_API char *zend_str_tolower_dup_changed(const char *source, unsigned int length, zend_bool *changed) /* {{{ */
+{
+	return zend_str_tolower_copy_changed((char *)emalloc(length+1), source, length, changed);
+}
+/* }}} */
+
 ZEND_API void zend_str_tolower(char *str, unsigned int length) /* {{{ */
 {
 	register unsigned char *p = (unsigned char*)str;

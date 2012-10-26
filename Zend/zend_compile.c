@@ -375,8 +375,6 @@ int zend_append_individual_literal(zend_op_array *op_array, const zval *zv TSRML
 int zend_add_func_name_literal(zend_op_array *op_array, const zval *zv TSRMLS_DC) /* {{{ */
 {
 	int ret;
-	char *lc_name;
-	zval c;
 	int lc_literal;
 
 	if (op_array->last_literal > 0 && 
@@ -387,10 +385,8 @@ int zend_add_func_name_literal(zend_op_array *op_array, const zval *zv TSRMLS_DC
 	} else {
 		ret = zend_add_literal(op_array, zv TSRMLS_CC);
 	}
-	
-	lc_name = zend_str_tolower_dup(Z_STRVAL_P(zv), Z_STRLEN_P(zv));
-	ZVAL_STRINGL(&c, lc_name, Z_STRLEN_P(zv), 0);
-	lc_literal = zend_add_literal(CG(active_op_array), &c TSRMLS_CC);
+
+	lc_literal = zend_add_literal(CG(active_op_array), zv TSRMLS_CC);
 	CALCULATE_LITERAL_HASH(lc_literal);
 
 	return ret;
@@ -400,7 +396,6 @@ int zend_add_func_name_literal(zend_op_array *op_array, const zval *zv TSRMLS_DC
 int zend_add_ns_func_name_literal(zend_op_array *op_array, const zval *zv TSRMLS_DC) /* {{{ */
 {
 	int ret;
-	char *lc_name;
 	const char *ns_separator;
 	int lc_len;
 	zval c;
@@ -415,15 +410,12 @@ int zend_add_ns_func_name_literal(zend_op_array *op_array, const zval *zv TSRMLS
 		ret = zend_add_literal(op_array, zv TSRMLS_CC);
 	}
 
-	lc_name = zend_str_tolower_dup(Z_STRVAL_P(zv), Z_STRLEN_P(zv));
-	ZVAL_STRINGL(&c, lc_name, Z_STRLEN_P(zv), 0);
-	lc_literal = zend_add_literal(CG(active_op_array), &c TSRMLS_CC);
+	lc_literal = zend_add_literal(CG(active_op_array), zv TSRMLS_CC);
 	CALCULATE_LITERAL_HASH(lc_literal);
 
 	ns_separator = (const char*)zend_memrchr(Z_STRVAL_P(zv), '\\', Z_STRLEN_P(zv)) + 1;
 	lc_len = Z_STRLEN_P(zv) - (ns_separator - Z_STRVAL_P(zv));
-	lc_name = zend_str_tolower_dup(ns_separator, lc_len);
-	ZVAL_STRINGL(&c, lc_name, lc_len, 0);
+	ZVAL_STRINGL(&c, ns_separator, lc_len, 0);
 	lc_literal = zend_add_literal(CG(active_op_array), &c TSRMLS_CC);
 	CALCULATE_LITERAL_HASH(lc_literal);
 
@@ -1526,8 +1518,8 @@ void zend_do_begin_function_declaration(znode *function_token, znode *function_n
 	int name_len = function_name->u.constant.value.str.len;
 	int function_begin_line = function_token->u.op.opline_num;
 	zend_uint fn_flags;
-	const char *lcname;
-	zend_bool orig_interactive;
+	const char *lcname, *original_name;
+	zend_bool orig_interactive, name_contains_uppercase = 0;
 	ALLOCA_FLAG(use_heap)
 
 	if (is_method) {
@@ -1566,12 +1558,21 @@ void zend_do_begin_function_declaration(znode *function_token, znode *function_n
 	if (is_method) {
 		int result;
 		
-		lcname = zend_new_interned_string(zend_str_tolower_dup(name, name_len), name_len + 1, 1 TSRMLS_CC);
-
+		lcname = zend_new_interned_string(zend_str_tolower_dup_changed(name, name_len, &name_contains_uppercase), name_len + 1, 1 TSRMLS_CC);
 		if (IS_INTERNED(lcname)) {
 			result = zend_hash_quick_add(&CG(active_class_entry)->function_table, lcname, name_len+1, INTERNED_HASH(lcname), &op_array, sizeof(zend_op_array), (void **) &CG(active_op_array));
 		} else {
 			result = zend_hash_add(&CG(active_class_entry)->function_table, lcname, name_len+1, &op_array, sizeof(zend_op_array), (void **) &CG(active_op_array));
+		}
+		// Register name with original case if it contains an uppercase letter
+		if (name_contains_uppercase) {
+			original_name = zend_new_interned_string(estrndup(name, name_len), name_len + 1, 1 TSRMLS_CC);
+			//printf("%s contained uppercase, registering with original name\n", original_name);
+			if (IS_INTERNED(original_name)) {
+				result = zend_hash_quick_add(&CG(active_class_entry)->function_table, original_name, name_len+1, INTERNED_HASH(original_name), &op_array, sizeof(zend_op_array), (void **) &CG(active_op_array));
+			} else {
+				result = zend_hash_add(&CG(active_class_entry)->function_table, original_name, name_len+1, &op_array, sizeof(zend_op_array), (void **) &CG(active_op_array));
+			}
 		}
 		if (result == FAILURE) {
 			zend_error(E_COMPILE_ERROR, "Cannot redeclare %s::%s()", CG(active_class_entry)->name, name);
@@ -1924,6 +1925,7 @@ int zend_do_begin_function_call(znode *function_name, zend_bool check_namespace 
 	zend_function *function;
 	char *lcname;
 	char *is_compound = memchr(Z_STRVAL(function_name->u.constant), '\\', Z_STRLEN(function_name->u.constant));
+	zend_bool name_contains_uppercase = 0;
 
 	zend_resolve_non_class_name(function_name, check_namespace TSRMLS_CC);
 
@@ -1937,16 +1939,22 @@ int zend_do_begin_function_call(znode *function_name, zend_bool check_namespace 
 			return 1;
 	} 
 
-	lcname = zend_str_tolower_dup(function_name->u.constant.value.str.val, function_name->u.constant.value.str.len);
-	if ((zend_hash_find(CG(function_table), lcname, function_name->u.constant.value.str.len+1, (void **) &function)==FAILURE) ||
-	 	((CG(compiler_options) & ZEND_COMPILE_IGNORE_INTERNAL_FUNCTIONS) &&
- 		(function->type == ZEND_INTERNAL_FUNCTION))) {
+	if ((CG(compiler_options) & ZEND_COMPILE_IGNORE_INTERNAL_FUNCTIONS) &&
+ 		(function->type == ZEND_INTERNAL_FUNCTION)) {
  			zend_do_begin_dynamic_function_call(function_name, 0 TSRMLS_CC);
- 			efree(lcname);
  			return 1; /* Dynamic */
  	} 
-	efree(function_name->u.constant.value.str.val);
-	function_name->u.constant.value.str.val = lcname;
+	if (zend_hash_find(CG(function_table), function_name->u.constant.value.str.val, function_name->u.constant.value.str.len+1, (void **) &function)==FAILURE) {
+		//printf("Lowercasing, not found with original\n");
+		lcname = zend_str_tolower_dup_changed(function_name->u.constant.value.str.val, function_name->u.constant.value.str.len, &name_contains_uppercase);
+		if (!name_contains_uppercase || zend_hash_find(CG(function_table), lcname, function_name->u.constant.value.str.len+1, (void **) &function)==FAILURE) {
+			zend_do_begin_dynamic_function_call(function_name, 0 TSRMLS_CC);
+			efree(lcname);
+			return 1; /* Dynamic */
+		} 
+		efree(function_name->u.constant.value.str.val);
+		function_name->u.constant.value.str.val = lcname;
+ 	}
 	
 	zend_stack_push(&CG(function_call_stack), (void *) &function, sizeof(zend_function *));
 	zend_do_extended_fcall_begin(TSRMLS_C);

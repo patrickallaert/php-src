@@ -1097,6 +1097,7 @@ ZEND_FUNCTION(method_exists)
 	int method_len;
 	char *lcname;
 	zend_class_entry * ce, **pce;
+	zend_bool name_contains_uppercase;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "zs", &klass, &method_name, &method_len) == FAILURE) {
 		return;
@@ -1112,32 +1113,36 @@ ZEND_FUNCTION(method_exists)
 		RETURN_FALSE;
 	}
 
-	lcname = zend_str_tolower_dup(method_name, method_len);
-	if (zend_hash_exists(&ce->function_table, lcname, method_len+1)) {
-		efree(lcname);
+	if (zend_hash_exists(&ce->function_table, method_name, method_len+1)) {
 		RETURN_TRUE;
 	} else {
-		union _zend_function *func = NULL;
-
-		if (Z_TYPE_P(klass) == IS_OBJECT 
-		&& Z_OBJ_HT_P(klass)->get_method != NULL
-		&& (func = Z_OBJ_HT_P(klass)->get_method(&klass, method_name, method_len, NULL TSRMLS_CC)) != NULL
-		) {
-			if (func->type == ZEND_INTERNAL_FUNCTION 
-			&& (func->common.fn_flags & ZEND_ACC_CALL_VIA_HANDLER) != 0
-			) {
-				/* Returns true to the fake Closure's __invoke */
-				RETVAL_BOOL((func->common.scope == zend_ce_closure
-					&& (method_len == sizeof(ZEND_INVOKE_FUNC_NAME)-1)
-					&& memcmp(lcname, ZEND_INVOKE_FUNC_NAME, sizeof(ZEND_INVOKE_FUNC_NAME)-1) == 0) ? 1 : 0);
-					
-				efree(lcname);
-				efree((char*)((zend_internal_function*)func)->function_name);
-				efree(func);
-				return;
-			}
+		lcname = zend_str_tolower_dup_changed(method_name, method_len, &name_contains_uppercase);
+		if (name_contains_uppercase && zend_hash_exists(&ce->function_table, lcname, method_len+1)) {
 			efree(lcname);
 			RETURN_TRUE;
+		} else {
+			union _zend_function *func = NULL;
+
+			if (Z_TYPE_P(klass) == IS_OBJECT
+			&& Z_OBJ_HT_P(klass)->get_method != NULL
+			&& (func = Z_OBJ_HT_P(klass)->get_method(&klass, method_name, method_len, NULL TSRMLS_CC)) != NULL
+			) {
+				if (func->type == ZEND_INTERNAL_FUNCTION
+				&& (func->common.fn_flags & ZEND_ACC_CALL_VIA_HANDLER) != 0
+				) {
+					/* Returns true to the fake Closure's __invoke */
+					RETVAL_BOOL((func->common.scope == zend_ce_closure
+						&& (method_len == sizeof(ZEND_INVOKE_FUNC_NAME)-1)
+						&& memcmp(lcname, ZEND_INVOKE_FUNC_NAME, sizeof(ZEND_INVOKE_FUNC_NAME)-1) == 0) ? 1 : 0);
+						
+					efree(lcname);
+					efree((char*)((zend_internal_function*)func)->function_name);
+					efree(func);
+					return;
+				}
+				efree(lcname);
+				RETURN_TRUE;
+			}
 		}
 	}
 	efree(lcname);
