@@ -2033,10 +2033,12 @@ ZEND_API int zend_register_functions(zend_class_entry *scope, const zend_functio
 	HashTable *target_function_table = function_table;
 	int error_type;
 	zend_function *ctor = NULL, *dtor = NULL, *clone = NULL, *__get = NULL, *__set = NULL, *__unset = NULL, *__isset = NULL, *__call = NULL, *__callstatic = NULL, *__tostring = NULL;
+	const char *original_name;
 	const char *lowercase_name;
 	int fname_len;
 	const char *lc_class_name = NULL;
 	int class_name_len = 0;
+	zend_bool name_contains_uppercase = 0;
 
 	if (type==MODULE_PERSISTENT) {
 		error_type = E_CORE_WARNING;
@@ -2134,14 +2136,26 @@ ZEND_API int zend_register_functions(zend_class_entry *scope, const zend_functio
 			}
 		}
 		fname_len = strlen(ptr->fname);
-		lowercase_name = zend_new_interned_string(zend_str_tolower_dup(ptr->fname, fname_len), fname_len + 1, 1 TSRMLS_CC);
+		lowercase_name = zend_new_interned_string(zend_str_tolower_dup_changed(ptr->fname, fname_len, &name_contains_uppercase), fname_len + 1, 1 TSRMLS_CC);
 		if (IS_INTERNED(lowercase_name)) {
 			result = zend_hash_quick_add(target_function_table, lowercase_name, fname_len+1, INTERNED_HASH(lowercase_name), &function, sizeof(zend_function), (void**)&reg_function);
 		} else {
 			result = zend_hash_add(target_function_table, lowercase_name, fname_len+1, &function, sizeof(zend_function), (void**)&reg_function);
 		}
+		if (name_contains_uppercase) {
+			original_name = zend_new_interned_string(estrndup(ptr->fname, fname_len), fname_len + 1, 1 TSRMLS_CC);
+			//printf("%s contained uppercase, registering with original name\n", original_name);
+			if (IS_INTERNED(original_name)) {
+				result = zend_hash_quick_add(target_function_table, original_name, fname_len+1, INTERNED_HASH(original_name), &function, sizeof(zend_function), (void**)&reg_function);
+			} else {
+				result = zend_hash_add(target_function_table, original_name, fname_len+1, &function, sizeof(zend_function), (void**)&reg_function);
+			}
+		}
 		if (result == FAILURE) {
 			unload=1;
+			if (name_contains_uppercase) {
+				str_efree(original_name);
+			}
 			str_efree(lowercase_name);
 			break;
 		}
